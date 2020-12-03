@@ -10,7 +10,6 @@ import sttp.client.{ UriContext, basicRequest }
 import sttp.model.Uri
 
 import zio._
-import zio.duration._
 import zio.redis._
 
 object ContributorsCache {
@@ -27,11 +26,19 @@ object ContributorsCache {
     }
 
   private[this] def read(repository: Repository): ZIO[RedisExecutor, ApiError, Contributors] =
-    get(repository.key)
-      .someOrFail(ApiError.CacheMiss)
-      .map(decode[Contributors])
-      .rightOrFail(ApiError.CorruptedData)
-      .refineToOrDie[ApiError]
+    sMembers(repository.key).flatMap { c: Chunk[String] =>
+      println(c)
+      if (c.isEmpty)
+        ZIO.fail(ApiError.CacheMiss)
+      else
+        ZIO.collectAll(c.map { value =>
+          ZIO.fromEither(decode[Contributor](value)).catchAll(_ => ZIO.fail(CorruptedData))
+        })
+    }.map(Contributors(_)).catchAll { t =>
+      println(t)
+      ZIO.fail(ApiError.CacheMiss)
+    }
+//      .rightOrFail(ApiError.CorruptedData)
 
   private[this] def retrieve(repository: Repository): ZIO[RedisExecutor with SttpClient, ApiError, Contributors] =
     for {
@@ -44,8 +51,12 @@ object ContributorsCache {
   private def cache(repository: Repository, contributors: Chunk[Contributor]): URIO[RedisExecutor, Any] =
     ZIO
       .fromOption(NonEmptyChunk.fromChunk(contributors))
-      .map(Contributors(_).asJson.noSpaces)
-      .flatMap(data => set(repository.key, data, Some(1.minute)).orDie)
+      .map(_.map(_.asJson.noSpaces))
+      .flatMap(data => ZIO.collectAll(data.map(sAdd(repository.key, _))))
+      .catchAll { t =>
+        println(t)
+        ZIO.fail(t)
+      }
       .ignore
 
   private[this] def urlOf(repository: Repository): Uri =
