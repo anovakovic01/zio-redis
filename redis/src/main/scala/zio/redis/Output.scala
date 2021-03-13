@@ -678,6 +678,14 @@ object Output {
       }
   }
 
+  case object QueuedOutput extends Output[Unit] {
+    protected def tryDecode(respValue: RespValue)(implicit codec: Codec): Unit =
+      respValue match {
+        case RespValue.SimpleString(_) =>
+        case other                     => throw ProtocolError(s"$other isn't a valid queued response")
+      }
+  }
+
   private def decodeDouble(bytes: Chunk[Byte]): Double = {
     val text = RespValue.decode(bytes)
     try text.toDouble
