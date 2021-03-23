@@ -1,9 +1,10 @@
 package zio.redis.api.transactions
 
-import zio.ZIO
-import zio.redis.Input.NoInput
-import zio.redis.Output.{ StringOutput, UnitOutput }
-import zio.redis.{ Output, RedisCommand, RedisError, RedisExecutor }
+import zio.{ Chunk, ZIO }
+import zio.redis.Input._
+import zio.redis.Output._
+import zio.redis.api.transactions.HList._
+import zio.redis.{ Input, Output, RedisError, RedisExecutor }
 
 sealed trait RedisTransaction[+Out] {
   import RedisTransaction._
@@ -19,13 +20,12 @@ sealed trait RedisTransaction[+Out] {
   //  cmd3).commit
 
   // How to handle exec output?
-  def commit: ZIO[RedisExecutor, RedisError, Out] =
-    for {
-      _      <- Multi.run()
-      _      <- run
-      outs   <- ZIO.accessM[TransactionState](_.get.get)
-      result <- exec(outs).run()
-    } yield result
+  def commit: ZIO[RedisExecutor, RedisError, Out] = ???
+  for {
+    _      <- Multi.run()
+    outs   <- send
+    result <- exec(outs).run()
+  } yield result
 
   // Should I overload these combinators in order to transform RedisCommands.
   def zip[A](right: RedisTransaction[A]): RedisTransaction[(Out, A)] =
@@ -46,34 +46,38 @@ sealed trait RedisTransaction[+Out] {
   def *>[A](right: RedisTransaction[A]): RedisTransaction[A] =
     zipRight(right)
 
-  protected def run: ZIO[TransactionState with RedisExecutor, RedisError, Unit]
+  def send: ZIO[RedisExecutor, RedisError, HList]
 }
 
 private[redis] object RedisTransaction {
-  final case class Single[Out](command: RedisTrCommand[Out]) extends RedisTransaction[Out] {
-    def run: ZIO[RedisExecutor, RedisError, Unit] =
-      ZIO.accessM[TransactionState] { st =>
-        for {
-          _ <- command.run()
-          _ <- st.get.getAndUpdate(_ + command.output)
-        } yield ()
-      }
+  final case class Single[In, +Out](in: In, command: RedisCommand[In, Out]) extends RedisTransaction[Out] {
+    def send: ZIO[RedisExecutor, RedisError, HList] =
+      ZIO
+        .accessM[RedisExecutor](_.get.execute(Input.StringInput.encode(command.name) ++ command.input.encode(in)))
+        .as(HCons(command.output, HNil))
+        .refineToOrDie[RedisError]
   }
 
   final case class Zip[A, B](left: RedisTransaction[A], right: RedisTransaction[B]) extends RedisTransaction[(A, B)] {
-    def run: ZIO[TransactionState with RedisExecutor, RedisError, Unit] = (left.run <*> right.run).unit
+    def send: ZIO[RedisExecutor, RedisError, HList] =
+      (left.send <*> right.send).map { case (lout, rout) =>
+        lout.concat(rout)
+      }
   }
 
   final case class ZipLeft[A, B](left: RedisTransaction[A], right: RedisTransaction[B]) extends RedisTransaction[A] {
-    def run: ZIO[TransactionState with RedisExecutor, RedisError, Unit] = left.run <* right.run
+    def send: ZIO[RedisExecutor, RedisError, HList] =
+      left.send <* right.send
   }
 
   final case class ZipRight[A, B](left: RedisTransaction[A], right: RedisTransaction[B]) extends RedisTransaction[B] {
-    def run: ZIO[TransactionState with RedisExecutor, RedisError, Unit] = left.run *> right.run
+    def send: ZIO[RedisExecutor, RedisError, HList] =
+      left.send *> right.send
   }
 
-  final val Multi: RedisCommand[Unit, String] = RedisCommand("MULTI", NoInput, StringOutput)
+  final val Multi: zio.redis.RedisCommand[Unit, String] =
+    zio.redis.RedisCommand("MULTI", NoInput, StringOutput)
 
-  final def exec(output: List[Output[Any]]): RedisCommand[Unit, List[Any]] =
-    RedisCommand("EXEC", NoInput, ExecOutput(output))
+  final def exec(output: HList): zio.redis.RedisCommand[Unit, HList] =
+    zio.redis.RedisCommand("EXEC", NoInput, ExecOutput(output))
 }

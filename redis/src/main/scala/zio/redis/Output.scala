@@ -4,6 +4,7 @@ import zio.Chunk
 import zio.duration._
 import zio.schema.Schema
 import zio.schema.codec.Codec
+import zio.redis.api.transactions.HList
 
 sealed trait Output[+A] {
   self =>
@@ -681,8 +682,22 @@ object Output {
   case object QueuedOutput extends Output[Unit] {
     protected def tryDecode(respValue: RespValue)(implicit codec: Codec): Unit =
       respValue match {
-        case RespValue.SimpleString(_) =>
+        case RespValue.SimpleString(_) => ()
         case other                     => throw ProtocolError(s"$other isn't a valid queued response")
+      }
+  }
+
+  // TODO: optimize, maybe use Chunk[Output[_]] instead of a HList
+  final case class ExecOutput(outputs: HList) extends HList {
+    protected def tryDecode(respValue: RespValue): HList =
+      respValue match {
+        case RespValue.Array(values) =>
+          values.zip(outputs).map { case (resp, out) =>
+            out.tryDecode(resp)
+          }
+        case RespValue.NullArray =>
+          Chunk.empty
+        case other => throw ProtocolError(s"$other isn't a valid array response")
       }
   }
 

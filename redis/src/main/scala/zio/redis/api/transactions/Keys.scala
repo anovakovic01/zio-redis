@@ -1,14 +1,14 @@
 package zio.redis.api.transactions
 
-import java.time.Instant
-
-import scala.util.matching.Regex
-
+import zio.Chunk
 import zio.duration._
 import zio.redis.Input._
 import zio.redis.Output._
-import zio.redis._
-import zio.{ Chunk, ZIO }
+import zio.redis.api.transactions.RedisTransaction.Single
+import zio.redis.{ RedisCommand => _, _ }
+
+import java.time.Instant
+import scala.util.matching.Regex
 
 trait Keys {
   import Keys.{ Keys => _, _ }
@@ -22,7 +22,7 @@ trait Keys {
    *
    * @see [[unlink]]
    */
-  final def del(key: String, keys: String*): ZIO[RedisExecutor, RedisError, Unit] = Del.run((key, keys.toList))
+  final def del(key: String, keys: String*): RedisTransaction[Long] = Single((key, keys.toList), Del)
 
   /**
    * Serialize the value stored at key in a Redis-specific format and return it to the user.
@@ -30,7 +30,7 @@ trait Keys {
    * @param key key
    * @return bytes for value stored at key
    */
-  final def dump(key: String): ZIO[RedisExecutor, RedisError, Chunk[Byte]] = Dump.run(key)
+  final def dump(key: String): RedisTransaction[Chunk[Byte]] = Single(key, Dump)
 
   /**
    * The number of keys existing among the ones specified as arguments. Keys mentioned multiple times and existing are
@@ -40,7 +40,7 @@ trait Keys {
    * @param keys maybe rest of the keys
    * @return The number of keys existing.
    */
-  final def exists(key: String, keys: String*): ZIO[RedisExecutor, RedisError, Long] = Exists.run((key, keys.toList))
+  final def exists(key: String, keys: String*): RedisTransaction[Long] = Single((key, keys.toList), Exists)
 
   /**
    * Set a timeout on key. After the timeout has expired, the key will automatically be deleted.
@@ -51,7 +51,7 @@ trait Keys {
    *
    * @see [[expireAt]]
    */
-  final def expire(key: String, timeout: Duration): ZIO[RedisExecutor, RedisError, Boolean] = Expire.run((key, timeout))
+  final def expire(key: String, timeout: Duration): RedisTransaction[Boolean] = Single((key, timeout), Expire)
 
   /**
    * Deletes the key at the specific timestamp. A timestamp in the past will delete the key immediately.
@@ -62,8 +62,7 @@ trait Keys {
    *
    * @see [[expire]]
    */
-  final def expireAt(key: String, timestamp: Instant): ZIO[RedisExecutor, RedisError, Boolean] =
-    ExpireAt.run((key, timestamp))
+  final def expireAt(key: String, timestamp: Instant): RedisTransaction[Boolean] = Single((key, timestamp), ExpireAt)
 
   /**
    * Returns all keys matching pattern.
@@ -71,7 +70,7 @@ trait Keys {
    * @param pattern string pattern
    * @return keys matching pattern
    */
-  final def keys(pattern: String): ZIO[RedisExecutor, RedisError, Chunk[String]] = Keys.Keys.run(pattern)
+  final def keys(pattern: String): RedisTransaction[Chunk[String]] = Single(pattern, Keys.Keys)
 
   /**
    * Atomically transfer a key from a source Redis instance to a destination Redis instance. On success the key is deleted
@@ -98,8 +97,8 @@ trait Keys {
     copy: Option[Copy] = None,
     replace: Option[Replace] = None,
     keys: Option[(String, List[String])]
-  ): ZIO[RedisExecutor, RedisError, String] =
-    Migrate.run((host, port, key, destinationDb, timeout.toMillis, copy, replace, auth, keys))
+  ): RedisTransaction[String] =
+    Single((host, port, key, destinationDb, timeout.toMillis, copy, replace, auth, keys), Migrate)
 
   /**
    * Move key from the currently selected database to the specified destination database. When key already
@@ -109,8 +108,8 @@ trait Keys {
    * @param destination_db destination database id
    * @return true if the key was moved
    */
-  final def move(key: String, destination_db: Long): ZIO[RedisExecutor, RedisError, Boolean] =
-    Move.run((key, destination_db))
+  final def move(key: String, destination_db: Long): RedisTransaction[Boolean] =
+    Single((key, destination_db), Move)
 
   /**
    * Remove the existing timeout on key
@@ -118,7 +117,7 @@ trait Keys {
    * @param key key
    * @return true if timeout was removed, false if key does not exist or does not have an associated timeout
    */
-  final def persist(key: String): ZIO[RedisExecutor, RedisError, Boolean] = Persist.run(key)
+  final def persist(key: String): RedisTransaction[Boolean] = Single(key, Persist)
 
   /**
    * Set a timeout on key. After the timeout has expired, the key will automatically be deleted.
@@ -129,8 +128,8 @@ trait Keys {
    *
    * @see [[pExpireAt]]
    */
-  final def pExpire(key: String, timeout: Duration): ZIO[RedisExecutor, RedisError, Boolean] =
-    PExpire.run((key, timeout))
+  final def pExpire(key: String, timeout: Duration): RedisTransaction[Boolean] =
+    Single((key, timeout), PExpire)
 
   /**
    * Deletes the key at the specific timestamp. A timestamp in the past will delete the key immediately.
@@ -141,8 +140,8 @@ trait Keys {
    *
    * @see [[pExpire]]
    */
-  final def pExpireAt(key: String, timestamp: Instant): ZIO[RedisExecutor, RedisError, Boolean] =
-    PExpireAt.run((key, timestamp))
+  final def pExpireAt(key: String, timestamp: Instant): RedisTransaction[Boolean] =
+    Single((key, timestamp), PExpireAt)
 
   /**
    * Returns the remaining time to live of a key that has a timeout.
@@ -150,13 +149,13 @@ trait Keys {
    * @param key key
    * @return remaining time to live of a key that has a timeout, error otherwise
    */
-  final def pTtl(key: String): ZIO[RedisExecutor, RedisError, Duration] = PTtl.run(key)
+  final def pTtl(key: String): RedisTransaction[Duration] = Single(key, PTtl)
 
   /**
    * Return a random key from the currently selected database.
    * @return key or None when the database is empty.
    */
-  final def randomKey(): ZIO[RedisExecutor, RedisError, Option[String]] = RandomKey.run(())
+  final def randomKey(): RedisTransaction[Option[String]] = Single((), RandomKey)
 
   /**
    * Renames key to newKey. It returns an error when key does not exist. If newKey already exists it is overwritten.
@@ -165,7 +164,7 @@ trait Keys {
    * @param newKey new name
    * @return unit if successful, error otherwise
    */
-  final def rename(key: String, newKey: String): ZIO[RedisExecutor, RedisError, Unit] = Rename.run((key, newKey))
+  final def rename(key: String, newKey: String): RedisTransaction[Unit] = Single((key, newKey), Rename)
 
   /**
    * Renames key to newKey if newKey does not yet exist. It returns an error when key does not exist.
@@ -174,7 +173,7 @@ trait Keys {
    * @param newKey new name
    * @return true if key was renamed to newKey, false if newKey already exists
    */
-  final def renameNx(key: String, newKey: String): ZIO[RedisExecutor, RedisError, Boolean] = RenameNx.run((key, newKey))
+  final def renameNx(key: String, newKey: String): RedisTransaction[Boolean] = Single((key, newKey), RenameNx)
 
   /**
    * Create a key associated with a value that is obtained by deserializing the provided serialized value. Error when key
@@ -197,7 +196,7 @@ trait Keys {
     absTtl: Option[AbsTtl] = None,
     idleTime: Option[IdleTime] = None,
     freq: Option[Freq] = None
-  ): ZIO[RedisExecutor, RedisError, Unit] = Restore.run((key, ttl, value, replace, absTtl, idleTime, freq))
+  ): RedisTransaction[Unit] = Single((key, ttl, value, replace, absTtl, idleTime, freq), Restore)
 
   /**
    * Iterates the set of keys in the currently selected Redis database. An iteration starts when the cursor is set to 0,
@@ -214,7 +213,7 @@ trait Keys {
     pattern: Option[Regex] = None,
     count: Option[Long] = None,
     `type`: Option[String] = None
-  ): ZIO[RedisExecutor, RedisError, (Long, Chunk[String])] = Scan.run((cursor, pattern, count, `type`))
+  ): RedisTransaction[(Long, Chunk[String])] = Single((cursor, pattern, count, `type`), Scan)
 
   /**
    * Alters the last access time of a key(s). A key is ignored if it does not exist.
@@ -223,7 +222,7 @@ trait Keys {
    * @param keys maybe rest of the keys
    * @return The number of keys that were touched.
    */
-  final def touch(key: String, keys: String*): ZIO[RedisExecutor, RedisError, Long] = Touch.run((key, keys.toList))
+  final def touch(key: String, keys: String*): RedisTransaction[Long] = Single((key, keys.toList), Touch)
 
   /**
    * Returns the remaining time to live of a key that has a timeout.
@@ -231,7 +230,7 @@ trait Keys {
    * @param key key
    * @return remaining time to live of a key that has a timeout, error otherwise
    */
-  final def ttl(key: String): ZIO[RedisExecutor, RedisError, Duration] = Ttl.run(key)
+  final def ttl(key: String): RedisTransaction[Duration] = Single(key, Ttl)
 
   /**
    * Returns the string representation of the type of the value stored at key.
@@ -239,7 +238,7 @@ trait Keys {
    * @param key key
    * @return type of the value stored at key
    */
-  final def typeOf(key: String): ZIO[RedisExecutor, RedisError, RedisType] = TypeOf.run(key)
+  final def typeOf(key: String): RedisTransaction[RedisType] = Single(key, TypeOf)
 
   /**
    * Removes the specified keys. A key is ignored if it does not exist. The command performs the actual memory reclaiming
@@ -251,7 +250,7 @@ trait Keys {
    *
    * @see [[del]]
    */
-  final def unlink(key: String, keys: String*): ZIO[RedisExecutor, RedisError, Long] = Unlink.run((key, keys.toList))
+  final def unlink(key: String, keys: String*): RedisTransaction[Long] = Single((key, keys.toList), Unlink)
 
   /**
    * This command blocks the current client until all the previous write commands are successfully transferred and acknowledged
@@ -261,8 +260,8 @@ trait Keys {
    * @param timeout specified as a Duration, 0 means to block forever
    * @return the number of replicas reached both in case of failure and success
    */
-  final def wait_(replicas: Long, timeout: Duration): ZIO[RedisExecutor, RedisError, Long] =
-    Wait.run((replicas, timeout.toMillis))
+  final def wait_(replicas: Long, timeout: Duration): RedisTransaction[Long] =
+    Single((replicas, timeout.toMillis), Wait)
 }
 
 private[redis] object Keys {
