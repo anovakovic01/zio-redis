@@ -5,6 +5,7 @@ import zio.duration._
 import zio.schema.Schema
 import zio.schema.codec.Codec
 import zio.redis.api.transactions.HList
+import zio.redis.api.transactions.HList.{ HCons, HNil }
 
 sealed trait Output[+A] {
   self =>
@@ -682,23 +683,29 @@ object Output {
   case object QueuedOutput extends Output[Unit] {
     protected def tryDecode(respValue: RespValue)(implicit codec: Codec): Unit =
       respValue match {
-        case RespValue.SimpleString(_) => ()
-        case other                     => throw ProtocolError(s"$other isn't a valid queued response")
+        case RespValue.SimpleString("QUEUED") => ()
+        case other                            => throw ProtocolError(s"$other isn't a valid queued response")
       }
   }
 
-  // TODO: optimize, maybe use Chunk[Output[_]] instead of a HList
-  final case class ExecOutput(outputs: HList) extends HList {
-    protected def tryDecode(respValue: RespValue): HList =
+  final case class ExecOutput(outputs: Chunk[Output[_]]) extends Output[HList] {
+    protected def tryDecode(respValue: RespValue)(implicit codec: Codec): HList =
       respValue match {
         case RespValue.Array(values) =>
-          values.zip(outputs).map { case (resp, out) =>
-            out.tryDecode(resp)
+          outputs.zip(values).foldRight[HList](HNil) { (out, acc) =>
+            val (output, value) = out
+            if (output != IgnoreOutput)
+              HCons(output.unsafeDecode(value), acc)
+            else acc
           }
         case RespValue.NullArray =>
-          Chunk.empty
+          HNil
         case other => throw ProtocolError(s"$other isn't a valid array response")
       }
+  }
+
+  case object IgnoreOutput extends Output[Unit] {
+    protected def tryDecode(respValue: RespValue)(implicit codec: Codec): Unit = ()
   }
 
   private def decodeDouble(bytes: Chunk[Byte]): Double = {

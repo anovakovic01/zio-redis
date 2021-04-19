@@ -1,14 +1,13 @@
 package zio.redis.api.transactions
 
-import zio.Chunk
+import java.time.Instant
 import zio.duration._
 import zio.redis.Input._
-import zio.redis.Output._
+import zio.redis.Output.{ Tuple2Output, _ }
 import zio.redis.api.transactions.RedisTransaction.Single
-import zio.redis.{ RedisCommand => _, _ }
-
-import java.time.Instant
-import scala.util.matching.Regex
+import zio.redis._
+import zio.schema.Schema
+import zio.Chunk
 
 trait Keys {
   import Keys.{ Keys => _, _ }
@@ -22,7 +21,8 @@ trait Keys {
    *
    * @see [[unlink]]
    */
-  final def del(key: String, keys: String*): RedisTransaction[Long] = Single((key, keys.toList), Del)
+  final def del[K: Schema](key: K, keys: K*): RedisTransaction[Long] =
+    Single((key, keys.toList), RedisCommand(Del, NonEmptyList(ArbitraryInput[K]()), LongOutput))
 
   /**
    * Serialize the value stored at key in a Redis-specific format and return it to the user.
@@ -30,7 +30,8 @@ trait Keys {
    * @param key key
    * @return bytes for value stored at key
    */
-  final def dump(key: String): RedisTransaction[Chunk[Byte]] = Single(key, Dump)
+  final def dump[K: Schema](key: K): RedisTransaction[Chunk[Byte]] =
+    Single(key, RedisCommand(Dump, ArbitraryInput[K](), BulkStringOutput))
 
   /**
    * The number of keys existing among the ones specified as arguments. Keys mentioned multiple times and existing are
@@ -40,7 +41,8 @@ trait Keys {
    * @param keys maybe rest of the keys
    * @return The number of keys existing.
    */
-  final def exists(key: String, keys: String*): RedisTransaction[Long] = Single((key, keys.toList), Exists)
+  final def exists[K: Schema](key: K, keys: K*): RedisTransaction[Long] =
+    Single((key, keys.toList), RedisCommand(Exists, NonEmptyList(ArbitraryInput[K]()), LongOutput))
 
   /**
    * Set a timeout on key. After the timeout has expired, the key will automatically be deleted.
@@ -51,7 +53,8 @@ trait Keys {
    *
    * @see [[expireAt]]
    */
-  final def expire(key: String, timeout: Duration): RedisTransaction[Boolean] = Single((key, timeout), Expire)
+  final def expire[K: Schema](key: K, timeout: Duration): RedisTransaction[Boolean] =
+    Single((key, timeout), RedisCommand(Expire, Tuple2(ArbitraryInput[K](), DurationMillisecondsInput), BoolOutput))
 
   /**
    * Deletes the key at the specific timestamp. A timestamp in the past will delete the key immediately.
@@ -62,7 +65,8 @@ trait Keys {
    *
    * @see [[expire]]
    */
-  final def expireAt(key: String, timestamp: Instant): RedisTransaction[Boolean] = Single((key, timestamp), ExpireAt)
+  final def expireAt[K: Schema](key: K, timestamp: Instant): RedisTransaction[Boolean] =
+    Single((key, timestamp), RedisCommand(ExpireAt, Tuple2(ArbitraryInput[K](), TimeSecondsInput), BoolOutput))
 
   /**
    * Returns all keys matching pattern.
@@ -70,11 +74,12 @@ trait Keys {
    * @param pattern string pattern
    * @return keys matching pattern
    */
-  final def keys(pattern: String): RedisTransaction[Chunk[String]] = Single(pattern, Keys.Keys)
+  final def keys[V: Schema](pattern: String): RedisTransaction[Chunk[V]] =
+    Single(pattern, RedisCommand(Keys.Keys, StringInput, ChunkOutput(ArbitraryOutput[V]())))
 
   /**
    * Atomically transfer a key from a source Redis instance to a destination Redis instance. On success the key is deleted
-   * from the original instance and is guaranteed to exist in the target instance.
+   * from the original instance and is guaranteed to exist in the targe instance.
    *
    * @param host remote redis host
    * @param port remote redis instance port
@@ -87,18 +92,35 @@ trait Keys {
    * @param keys keys option, to migrate multiple keys, non empty list of keys
    * @return string OK on success, or NOKEY if no keys were found in the source instance
    */
-  final def migrate(
+  final def migrate[K: Schema](
     host: String,
     port: Long,
-    key: String,
+    key: K,
     destinationDb: Long,
     timeout: Duration,
     auth: Option[Auth] = None,
     copy: Option[Copy] = None,
     replace: Option[Replace] = None,
-    keys: Option[(String, List[String])]
+    keys: Option[(K, List[K])]
   ): RedisTransaction[String] =
-    Single((host, port, key, destinationDb, timeout.toMillis, copy, replace, auth, keys), Migrate)
+    Single(
+      (host, port, key, destinationDb, timeout.toMillis, copy, replace, auth, keys),
+      RedisCommand(
+        Migrate,
+        Tuple9(
+          StringInput,
+          LongInput,
+          ArbitraryInput[K](),
+          LongInput,
+          LongInput,
+          OptionalInput(CopyInput),
+          OptionalInput(ReplaceInput),
+          OptionalInput(AuthInput),
+          OptionalInput(NonEmptyList(ArbitraryInput[K]()))
+        ),
+        StringOutput
+      )
+    )
 
   /**
    * Move key from the currently selected database to the specified destination database. When key already
@@ -108,8 +130,8 @@ trait Keys {
    * @param destination_db destination database id
    * @return true if the key was moved
    */
-  final def move(key: String, destination_db: Long): RedisTransaction[Boolean] =
-    Single((key, destination_db), Move)
+  final def move[K: Schema](key: K, destination_db: Long): RedisTransaction[Boolean] =
+    Single((key, destination_db), RedisCommand(Move, Tuple2(ArbitraryInput[K](), LongInput), BoolOutput))
 
   /**
    * Remove the existing timeout on key
@@ -117,7 +139,8 @@ trait Keys {
    * @param key key
    * @return true if timeout was removed, false if key does not exist or does not have an associated timeout
    */
-  final def persist(key: String): RedisTransaction[Boolean] = Single(key, Persist)
+  final def persist[K: Schema](key: K): RedisTransaction[Boolean] =
+    Single(key, RedisCommand(Persist, ArbitraryInput[K](), BoolOutput))
 
   /**
    * Set a timeout on key. After the timeout has expired, the key will automatically be deleted.
@@ -128,8 +151,8 @@ trait Keys {
    *
    * @see [[pExpireAt]]
    */
-  final def pExpire(key: String, timeout: Duration): RedisTransaction[Boolean] =
-    Single((key, timeout), PExpire)
+  final def pExpire[K: Schema](key: K, timeout: Duration): RedisTransaction[Boolean] =
+    Single((key, timeout), RedisCommand(PExpire, Tuple2(ArbitraryInput[K](), DurationMillisecondsInput), BoolOutput))
 
   /**
    * Deletes the key at the specific timestamp. A timestamp in the past will delete the key immediately.
@@ -140,8 +163,8 @@ trait Keys {
    *
    * @see [[pExpire]]
    */
-  final def pExpireAt(key: String, timestamp: Instant): RedisTransaction[Boolean] =
-    Single((key, timestamp), PExpireAt)
+  final def pExpireAt[K: Schema](key: K, timestamp: Instant): RedisTransaction[Boolean] =
+    Single((key, timestamp), RedisCommand(PExpireAt, Tuple2(ArbitraryInput[K](), TimeMillisecondsInput), BoolOutput))
 
   /**
    * Returns the remaining time to live of a key that has a timeout.
@@ -149,13 +172,15 @@ trait Keys {
    * @param key key
    * @return remaining time to live of a key that has a timeout, error otherwise
    */
-  final def pTtl(key: String): RedisTransaction[Duration] = Single(key, PTtl)
+  final def pTtl[K: Schema](key: K): RedisTransaction[Duration] =
+    Single(key, RedisCommand(PTtl, ArbitraryInput[K](), DurationMillisecondsOutput))
 
   /**
    * Return a random key from the currently selected database.
    * @return key or None when the database is empty.
    */
-  final def randomKey(): RedisTransaction[Option[String]] = Single((), RandomKey)
+  final def randomKey[V: Schema](): RedisTransaction[Option[V]] =
+    Single((), RedisCommand(RandomKey, NoInput, OptionalOutput(ArbitraryOutput[V]())))
 
   /**
    * Renames key to newKey. It returns an error when key does not exist. If newKey already exists it is overwritten.
@@ -164,7 +189,8 @@ trait Keys {
    * @param newKey new name
    * @return unit if successful, error otherwise
    */
-  final def rename(key: String, newKey: String): RedisTransaction[Unit] = Single((key, newKey), Rename)
+  final def rename[K: Schema](key: K, newKey: K): RedisTransaction[Unit] =
+    Single((key, newKey), RedisCommand(Rename, Tuple2(ArbitraryInput[K](), ArbitraryInput[K]()), UnitOutput))
 
   /**
    * Renames key to newKey if newKey does not yet exist. It returns an error when key does not exist.
@@ -173,7 +199,8 @@ trait Keys {
    * @param newKey new name
    * @return true if key was renamed to newKey, false if newKey already exists
    */
-  final def renameNx(key: String, newKey: String): RedisTransaction[Boolean] = Single((key, newKey), RenameNx)
+  final def renameNx[K: Schema](key: K, newKey: K): RedisTransaction[Boolean] =
+    Single((key, newKey), RedisCommand(RenameNx, Tuple2(ArbitraryInput[K](), ArbitraryInput[K]()), BoolOutput))
 
   /**
    * Create a key associated with a value that is obtained by deserializing the provided serialized value. Error when key
@@ -188,15 +215,31 @@ trait Keys {
    * @param freq frequency based eviction policy
    * @return unit on success
    */
-  final def restore(
-    key: String,
+  final def restore[K: Schema](
+    key: K,
     ttl: Long,
     value: Chunk[Byte],
     replace: Option[Replace] = None,
     absTtl: Option[AbsTtl] = None,
     idleTime: Option[IdleTime] = None,
     freq: Option[Freq] = None
-  ): RedisTransaction[Unit] = Single((key, ttl, value, replace, absTtl, idleTime, freq), Restore)
+  ): RedisTransaction[Unit] =
+    Single(
+      (key, ttl, value, replace, absTtl, idleTime, freq),
+      RedisCommand(
+        Restore,
+        Tuple7(
+          ArbitraryInput[K](),
+          LongInput,
+          ByteInput,
+          OptionalInput(ReplaceInput),
+          OptionalInput(AbsTtlInput),
+          OptionalInput(IdleTimeInput),
+          OptionalInput(FreqInput)
+        ),
+        UnitOutput
+      )
+    )
 
   /**
    * Iterates the set of keys in the currently selected Redis database. An iteration starts when the cursor is set to 0,
@@ -208,12 +251,96 @@ trait Keys {
    * @param `type` type option, filter to only return objects that match a given type
    * @return returns an updated cursor that the user needs to use as the cursor argument in the next call along with the values
    */
-  final def scan(
+  final def scan[K: Schema](
     cursor: Long,
-    pattern: Option[Regex] = None,
-    count: Option[Long] = None,
-    `type`: Option[String] = None
-  ): RedisTransaction[(Long, Chunk[String])] = Single((cursor, pattern, count, `type`), Scan)
+    pattern: Option[String] = None,
+    count: Option[Count] = None,
+    `type`: Option[RedisType] = None
+  ): RedisTransaction[(Long, Chunk[K])] =
+    Single(
+      (cursor, pattern.map(Pattern), count, `type`),
+      RedisCommand(
+        Scan,
+        Tuple4(LongInput, OptionalInput(PatternInput), OptionalInput(CountInput), OptionalInput(RedisTypeInput)),
+        Tuple2Output(ArbitraryOutput[Long](), ChunkOutput(ArbitraryOutput[K]()))
+      )
+    )
+
+  /**
+   * Sorts the list, set, or sorted set stored at key. Returns the sorted elements.
+   *
+   * @param key key
+   * @param by by option, specifies a pattern to use as an external key
+   * @param limit limit option, take only limit values, starting at position offset
+   * @param order ordering option, sort descending instead of ascending
+   * @param get get option, return the values referenced by the keys generated from the get patterns
+   * @param alpha alpha option, sort the values alphanumerically, instead of by interpreting the value as floating point number
+   * @return the sorted values, or the values found using the get patterns
+   */
+  final def sort[K: Schema, V: Schema](
+    key: K,
+    by: Option[String] = None,
+    limit: Option[Limit] = None,
+    order: Order = Order.Ascending,
+    get: Option[(String, List[String])] = None,
+    alpha: Option[Alpha] = None
+  ): RedisTransaction[Chunk[V]] =
+    Single(
+      (key, by, limit, get, order, alpha),
+      RedisCommand(
+        Sort,
+        Tuple6(
+          ArbitraryInput[K](),
+          OptionalInput(ByInput),
+          OptionalInput(LimitInput),
+          OptionalInput(NonEmptyList(GetInput)),
+          OrderInput,
+          OptionalInput(AlphaInput)
+        ),
+        ChunkOutput(ArbitraryOutput[V]())
+      )
+    )
+
+  /**
+   * Sorts the list, set, or sorted set stored at key. Stores the results at storeAt. Returns the number of values sorted.
+   *
+   * The functions sort and sortStore are both implemented by the Redis command SORT. Because they have different return
+   * types, they are split into two Scala functions.
+   *
+   * @param key key
+   * @param storeAt where to store the results
+   * @param by by option, specifies a pattern to use as an external key
+   * @param limit limit option, take only limit values, starting at position offset
+   * @param order ordering option, sort descending instead of ascending
+   * @param get get option, return the values referenced by the keys generated from the get patterns
+   * @param alpha alpha option, sort the values alphanumerically, instead of by interpreting the value as floating point number
+   * @return the sorted values, or the values found using the get patterns
+   */
+  final def sortStore[K: Schema](
+    key: K,
+    storeAt: Store,
+    by: Option[String] = None,
+    limit: Option[Limit] = None,
+    order: Order = Order.Ascending,
+    get: Option[(String, List[String])] = None,
+    alpha: Option[Alpha] = None
+  ): RedisTransaction[Long] =
+    Single(
+      (key, by, limit, get, order, alpha, storeAt),
+      RedisCommand(
+        SortStore,
+        Tuple7(
+          ArbitraryInput[K](),
+          OptionalInput(ByInput),
+          OptionalInput(LimitInput),
+          OptionalInput(NonEmptyList(GetInput)),
+          OrderInput,
+          OptionalInput(AlphaInput),
+          StoreInput
+        ),
+        LongOutput
+      )
+    )
 
   /**
    * Alters the last access time of a key(s). A key is ignored if it does not exist.
@@ -222,7 +349,8 @@ trait Keys {
    * @param keys maybe rest of the keys
    * @return The number of keys that were touched.
    */
-  final def touch(key: String, keys: String*): RedisTransaction[Long] = Single((key, keys.toList), Touch)
+  final def touch[K: Schema](key: K, keys: K*): RedisTransaction[Long] =
+    Single((key, keys.toList), RedisCommand(Touch, NonEmptyList(ArbitraryInput[K]()), LongOutput))
 
   /**
    * Returns the remaining time to live of a key that has a timeout.
@@ -230,7 +358,8 @@ trait Keys {
    * @param key key
    * @return remaining time to live of a key that has a timeout, error otherwise
    */
-  final def ttl(key: String): RedisTransaction[Duration] = Single(key, Ttl)
+  final def ttl[K: Schema](key: K): RedisTransaction[Duration] =
+    Single(key, RedisCommand(Ttl, ArbitraryInput[K](), DurationSecondsOutput))
 
   /**
    * Returns the string representation of the type of the value stored at key.
@@ -238,7 +367,8 @@ trait Keys {
    * @param key key
    * @return type of the value stored at key
    */
-  final def typeOf(key: String): RedisTransaction[RedisType] = Single(key, TypeOf)
+  final def typeOf[K: Schema](key: K): RedisTransaction[RedisType] =
+    Single(key, RedisCommand(TypeOf, ArbitraryInput[K](), TypeOutput))
 
   /**
    * Removes the specified keys. A key is ignored if it does not exist. The command performs the actual memory reclaiming
@@ -250,7 +380,8 @@ trait Keys {
    *
    * @see [[del]]
    */
-  final def unlink(key: String, keys: String*): RedisTransaction[Long] = Single((key, keys.toList), Unlink)
+  final def unlink[K: Schema](key: K, keys: K*): RedisTransaction[Long] =
+    Single((key, keys.toList), RedisCommand(Unlink, NonEmptyList(ArbitraryInput[K]()), LongOutput))
 
   /**
    * This command blocks the current client until all the previous write commands are successfully transferred and acknowledged
@@ -261,100 +392,32 @@ trait Keys {
    * @return the number of replicas reached both in case of failure and success
    */
   final def wait_(replicas: Long, timeout: Duration): RedisTransaction[Long] =
-    Single((replicas, timeout.toMillis), Wait)
+    Single((replicas, timeout), RedisCommand(Wait, Tuple2(LongInput, DurationSecondsInput), LongOutput))
 }
 
 private[redis] object Keys {
-  final val Del: RedisCommand[(String, List[String]), Long] =
-    RedisCommand("DEL", NonEmptyList(StringInput), LongOutput)
-
-  final val Dump: RedisCommand[String, Chunk[Byte]] = RedisCommand("DUMP", StringInput, BulkStringOutput)
-
-  final val Exists: RedisCommand[(String, List[String]), Long] =
-    RedisCommand("EXISTS", NonEmptyList(StringInput), LongOutput)
-
-  final val Expire: RedisCommand[(String, Duration), Boolean] =
-    RedisCommand("EXPIRE", Tuple2(StringInput, DurationSecondsInput), BoolOutput)
-
-  final val ExpireAt: RedisCommand[(String, Instant), Boolean] =
-    RedisCommand("EXPIREAT", Tuple2(StringInput, TimeSecondsInput), BoolOutput)
-
-  final val Keys: RedisCommand[String, Chunk[String]] = RedisCommand("KEYS", StringInput, ChunkOutput)
-
-  final val Migrate: RedisCommand[
-    (String, Long, String, Long, Long, Option[Copy], Option[Replace], Option[Auth], Option[(String, List[String])]),
-    String
-  ] =
-    RedisCommand(
-      "MIGRATE",
-      Tuple9(
-        StringInput,
-        LongInput,
-        StringInput,
-        LongInput,
-        LongInput,
-        OptionalInput(CopyInput),
-        OptionalInput(ReplaceInput),
-        OptionalInput(AuthInput),
-        OptionalInput(NonEmptyList(StringInput))
-      ),
-      StringOutput
-    )
-
-  final val Move: RedisCommand[(String, Long), Boolean] =
-    RedisCommand("MOVE", Tuple2(StringInput, LongInput), BoolOutput)
-
-  final val Persist: RedisCommand[String, Boolean] = RedisCommand("PERSIST", StringInput, BoolOutput)
-
-  final val PExpire: RedisCommand[(String, Duration), Boolean] =
-    RedisCommand("PEXPIRE", Tuple2(StringInput, DurationMillisecondsInput), BoolOutput)
-
-  final val PExpireAt: RedisCommand[(String, Instant), Boolean] =
-    RedisCommand("PEXPIREAT", Tuple2(StringInput, TimeMillisecondsInput), BoolOutput)
-
-  final val PTtl: RedisCommand[String, Duration] = RedisCommand("PTTL", StringInput, DurationMillisecondsOutput)
-
-  final val RandomKey: RedisCommand[Unit, Option[String]] =
-    RedisCommand("RANDOMKEY", NoInput, OptionalOutput(MultiStringOutput))
-
-  final val Rename: RedisCommand[(String, String), Unit] =
-    RedisCommand("RENAME", Tuple2(StringInput, StringInput), UnitOutput)
-
-  final val RenameNx: RedisCommand[(String, String), Boolean] =
-    RedisCommand("RENAMENX", Tuple2(StringInput, StringInput), BoolOutput)
-
-  final val Restore
-    : RedisCommand[(String, Long, Chunk[Byte], Option[Replace], Option[AbsTtl], Option[IdleTime], Option[Freq]), Unit] =
-    RedisCommand(
-      "RESTORE",
-      Tuple7(
-        StringInput,
-        LongInput,
-        ByteInput,
-        OptionalInput(ReplaceInput),
-        OptionalInput(AbsTtlInput),
-        OptionalInput(IdleTimeInput),
-        OptionalInput(FreqInput)
-      ),
-      UnitOutput
-    )
-
-  final val Scan: RedisCommand[(Long, Option[Regex], Option[Long], Option[String]), (Long, Chunk[String])] =
-    RedisCommand(
-      "SCAN",
-      Tuple4(LongInput, OptionalInput(RegexInput), OptionalInput(LongInput), OptionalInput(StringInput)),
-      ScanOutput
-    )
-
-  final val Touch: RedisCommand[(String, List[String]), Long] =
-    RedisCommand("TOUCH", NonEmptyList(StringInput), LongOutput)
-
-  final val Ttl: RedisCommand[String, Duration] = RedisCommand("TTL", StringInput, DurationSecondsOutput)
-
-  final val TypeOf: RedisCommand[String, RedisType] = RedisCommand("TYPE", StringInput, TypeOutput)
-
-  final val Unlink: RedisCommand[(String, List[String]), Long] =
-    RedisCommand("UNLINK", NonEmptyList(StringInput), LongOutput)
-
-  final val Wait: RedisCommand[(Long, Long), Long] = RedisCommand("WAIT", Tuple2(LongInput, LongInput), LongOutput)
+  final val Del       = "DEL"
+  final val Dump      = "DUMP"
+  final val Exists    = "EXISTS"
+  final val Expire    = "EXPIRE"
+  final val ExpireAt  = "EXPIREAT"
+  final val Keys      = "KEYS"
+  final val Migrate   = "MIGRATE"
+  final val Move      = "MOVE"
+  final val Persist   = "PERSIST"
+  final val PExpire   = "PEXPIRE"
+  final val PExpireAt = "PEXPIREAT"
+  final val PTtl      = "PTTL"
+  final val RandomKey = "RANDOMKEY"
+  final val Rename    = "RENAME"
+  final val RenameNx  = "RENAMENX"
+  final val Restore   = "RESTORE"
+  final val Scan      = "SCAN"
+  final val Sort      = "SORT"
+  final val SortStore = "SORT"
+  final val Touch     = "TOUCH"
+  final val Ttl       = "TTL"
+  final val TypeOf    = "TYPE"
+  final val Unlink    = "UNLINK"
+  final val Wait      = "WAIT"
 }
